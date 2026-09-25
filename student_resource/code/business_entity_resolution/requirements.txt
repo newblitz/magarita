@@ -24,8 +24,22 @@ joblib==1.6.0
 # Both Apache-2.0 licensed, both < 8B params (see README.md "License and size
 # compliance" section for the specific model checked).
 sentence-transformers==3.3.1
+
+# CPU-only FAISS -- always installable, always works (exact/approximate search
+# on CPU). This is the pipeline's default and is used automatically whenever
+# no GPU-enabled FAISS build is importable.
 faiss-cpu==1.9.0
+# To use the GPU code path in src/blocking/tier2_semantic.py (e.g. on Kaggle's
+# T4 x2), install a GPU-enabled FAISS build INSTEAD OF faiss-cpu -- there is no
+# official GPU wheel on PyPI as of this writing, so use conda or a
+# platform-specific wheel, e.g.:
+#   conda install -c pytorch -c nvidia faiss-gpu=1.9.0
+# The pipeline auto-detects whether the installed faiss build has GPU support
+# (src/blocking/tier2_semantic.py::_faiss_gpu_available) and falls back to
+# faiss-cpu's CPU HNSW index automatically if not -- no config change needed
+# either way.
 
 # Needed transitively by sentence-transformers; pin only if you hit resolver
-# conflicts in your own environment -- otherwise let pip resolve them.
+# conflicts in your own environment -- otherwise let pip resolve it, and let
+# it pick up your platform's CUDA build for GPU acceleration.
 torch==2.5.1

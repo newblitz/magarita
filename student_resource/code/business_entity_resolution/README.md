@@ -149,3 +149,38 @@ least once before `run_inference.py`.
 - No component in this pipeline queries an external API, geocoder, or business
   registry; every similarity signal is computed from `business_name`,
   `business_address` and `country` in the three provided source files.
+
+## GPU utilization (e.g. Kaggle T4 x2)
+
+Only Tier 2 (`src/blocking/tier2_semantic.py`) is GPU-relevant -- Tier 0/1 are
+hash-join/CPU-bound by design, and the LightGBM classifier is small enough that
+CPU training is normally faster than the overhead of a GPU build (see
+`classifier.device_type` below if you want to try anyway).
+
+- **Embedding encoding** uses every visible CUDA device automatically
+  (`tier2_semantic.multi_gpu: true`, the default) via sentence-transformers'
+  persistent multi-process pool -- one worker process per GPU, started once
+  and reused across every country/field/source combination, not respawned per
+  call. `tier2_semantic.fp16: true` (default) runs the model in half precision
+  on CUDA, which roughly doubles T4 throughput.
+- **FAISS search** auto-detects a GPU-enabled FAISS build
+  (`tier2_semantic.index_backend: auto`, the default) and, when found, uses an
+  exact brute-force `IndexFlatIP` replicated across every visible GPU via
+  `faiss.index_cpu_to_all_gpus` -- FAISS has no GPU implementation of HNSW, so
+  this is the GPU-accelerated equivalent, not the same index type as the CPU
+  path. With only `faiss-cpu` installed (the default in `requirements.txt`),
+  this silently falls back to the CPU `IndexHNSWFlat` from the architecture
+  report -- install a GPU-enabled FAISS build to actually exercise the GPU
+  path (see the comment in `requirements.txt`).
+- **LightGBM** (`classifier.device_type`, default `cpu`) can be set to `gpu`/
+  `cuda`, but only takes effect if your LightGBM build was compiled with
+  GPU/CUDA support (a plain `pip install lightgbm` usually isn't); the
+  pipeline catches the failure and automatically re-fits on CPU if the GPU
+  path errors, so this is safe to leave on `cpu` by default.
+- Override any of these per run without editing `config.yaml` by loading the
+  config in Python and mutating the dict before calling the phase functions,
+  or by keeping separate `config.yaml` variants (e.g. `config.kaggle.yaml`)
+  and passing `--config` to `run_train.py`/`run_inference.py`.
+
+See `KAGGLE.md` for the exact notebook commands to enable and verify GPU usage
+on a T4 x2 session.

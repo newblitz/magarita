@@ -37,8 +37,19 @@ tier2_semantic:
     ef_search: 16
     m: 32
   top_k: 10                  # start at 10, sweep 5-20 during tuning
-  batch_size: 256
+  batch_size: 256            # per-GPU batch size when multi_gpu splits across devices
   fine_tune: false            # set true once contrastive fine-tuning (per architecture report §7) is wired up
+  # --- GPU utilization (e.g. Kaggle T4 x2) ---
+  device: auto               # auto | cpu | cuda | cuda:0 | cuda:1 ...
+  multi_gpu: true            # use every visible CUDA GPU (embedding pool + FAISS index)
+  fp16: true                 # half-precision embedding inference on CUDA (ignored on CPU)
+  require_gpu: false         # set true to raise loudly instead of silently falling back
+                              # to CPU when no CUDA device is visible -- use this while
+                              # debugging "why is it on CPU" on a GPU notebook
+  index_backend: auto        # auto | gpu_flat | cpu_hnsw -- FAISS has no GPU HNSW, so
+                              # gpu_flat is an exact brute-force IndexFlatIP replicated
+                              # across every visible GPU; auto falls back to cpu_hnsw
+                              # when no GPU-enabled FAISS build/device is present
 
 threshold_learning:
   sample_pairs_per_class: null   # default: len(ground_truth) // 2, per class
@@ -55,6 +66,12 @@ classifier:
   n_estimators: 500
   early_stopping_rounds: 50
   random_seed: 42
+  device_type: cpu           # cpu | gpu | cuda -- GPU needs a LightGBM build compiled
+                              # with GPU/CUDA support; a plain `pip install lightgbm`
+                              # usually isn't, so this defaults to cpu and auto-falls
+                              # back if the GPU path errors. The tabular feature matrix
+                              # here is small/medium by GBM standards -- Tier 2
+                              # (embeddings + FAISS) is where the T4s actually help.
 
 calibration:
   metric: macro_f0.5

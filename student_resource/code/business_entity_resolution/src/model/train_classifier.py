@@ -12,11 +12,14 @@
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass, field
 
 import pandas as pd
 
 from src.features.pairwise_features import CATEGORICAL_COLUMNS, FEATURE_COLUMNS
+
+log = logging.getLogger(__name__)
 
 
 @dataclass
@@ -72,27 +75,53 @@ def train_classifier(
 
     import lightgbm as lgb
 
-    model = lgb.LGBMClassifier(
-        max_depth=clf_cfg.get("max_depth", -1),
-        num_leaves=clf_cfg.get("num_leaves", 63),
-        learning_rate=clf_cfg.get("learning_rate", 0.05),
-        n_estimators=clf_cfg.get("n_estimators", 500),
-        random_state=clf_cfg.get("random_seed", 42),
-    )
-    callbacks = []
-    eval_set = None
-    if len(X_val) and y_val.nunique() > 1:
-        eval_set = [(X_val, y_val)]
-        callbacks.append(
-            lgb.early_stopping(clf_cfg.get("early_stopping_rounds", 50), verbose=False)
+    def _make_model(device_type: str) -> "lgb.LGBMClassifier":
+        kwargs = dict(
+            max_depth=clf_cfg.get("max_depth", -1),
+            num_leaves=clf_cfg.get("num_leaves", 63),
+            learning_rate=clf_cfg.get("learning_rate", 0.05),
+            n_estimators=clf_cfg.get("n_estimators", 500),
+            random_state=clf_cfg.get("random_seed", 42),
         )
-    model.fit(
-        X_train,
-        y_train,
-        eval_set=eval_set,
-        categorical_feature=CATEGORICAL_COLUMNS,
-        callbacks=callbacks if eval_set else None,
-    )
+        if device_type and device_type != "cpu":
+            kwargs["device_type"] = device_type
+        return lgb.LGBMClassifier(**kwargs)
+
+    def _fit(model: "lgb.LGBMClassifier") -> "lgb.LGBMClassifier":
+        callbacks = []
+        eval_set = None
+        if len(X_val) and y_val.nunique() > 1:
+            eval_set = [(X_val, y_val)]
+            callbacks.append(
+                lgb.early_stopping(clf_cfg.get("early_stopping_rounds", 50), verbose=False)
+            )
+        model.fit(
+            X_train,
+            y_train,
+            eval_set=eval_set,
+            categorical_feature=CATEGORICAL_COLUMNS,
+            callbacks=callbacks if eval_set else None,
+        )
+        return model
+
+    # GPU is optional and only helps LightGBM here for very large candidate sets --
+    # this classifier is tabular and small/medium by GBM standards, so CPU is the
+    # safe default. If classifier.device_type is set to "gpu"/"cuda", try it and
+    # fall back to CPU automatically if this LightGBM build wasn't compiled with
+    # GPU/CUDA support (the common case for a plain `pip install lightgbm`).
+    device_type = clf_cfg.get("device_type", "cpu")
+    model = _make_model(device_type)
+    try:
+        model = _fit(model)
+    except Exception as exc:
+        if device_type == "cpu":
+            raise
+        log.warning(
+            "LightGBM device_type=%r failed (%s) -- this build was likely compiled "
+            "without GPU/CUDA support. Falling back to CPU.",
+            device_type, exc,
+        )
+        model = _fit(_make_model("cpu"))
 
     importance = pd.DataFrame(
         {

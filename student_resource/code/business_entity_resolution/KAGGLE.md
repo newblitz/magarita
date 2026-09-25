@@ -61,20 +61,49 @@ os.environ["BER_PROJECT_ROOT"] = str(PROJECT_ROOT)
 print(list(PROJECT_ROOT.iterdir()))
 ```
 
-## 4. Install the extra dependencies
+## 4. Install the extra dependencies -- and turn on both T4s
+
+First, in the notebook's **Settings -> Accelerator**, select **GPU T4 x2**
+(not the single-GPU option) and make sure **Internet** is on.
 
 Kaggle's base image already ships `pandas`, `numpy`, `scikit-learn`,
 `lightgbm`, `torch`, `transformers`. You only need:
 
 ```python
-!pip install -q datasketch rapidfuzz sentence-transformers faiss-cpu pyyaml joblib
+!pip install -q datasketch rapidfuzz sentence-transformers pyyaml joblib
 ```
 
-(GPU notebooks: `sentence-transformers` will automatically use the GPU for
-Tier 2 encoding -- no code change needed. `faiss-cpu` builds/searches the HNSW
-index on CPU, which is fine at Kaggle's per-session data volumes; swap to
-`faiss-gpu` only if you also shard the corpus, which is out of scope for a
-single-notebook run.)
+**FAISS -- CPU vs. GPU:** Kaggle's default image ships CPU-only `faiss`. The
+pipeline (`src/blocking/tier2_semantic.py`) auto-detects whether a GPU-enabled
+FAISS build is importable and falls back cleanly to CPU search if not, so
+everything runs either way -- but to actually get GPU-accelerated search
+across both T4s, install a GPU build via conda (there's no official GPU wheel
+on PyPI):
+
+```python
+!conda install -y -c pytorch -c nvidia faiss-gpu=1.9.0 2>&1 | tail -5
+```
+
+If that conda channel isn't reachable from your notebook, skip it -- Tier 2
+still runs correctly on CPU FAISS, just without GPU-accelerated search.
+
+**Verify both GPUs are visible before running anything:**
+```python
+import torch
+print("CUDA devices:", torch.cuda.device_count())
+for i in range(torch.cuda.device_count()):
+    print(i, torch.cuda.get_device_name(i))
+
+import faiss
+print("FAISS GPU-enabled:", hasattr(faiss, "StandardGpuResources"))
+if hasattr(faiss, "get_num_gpus"):
+    print("FAISS sees", faiss.get_num_gpus(), "GPU(s)")
+```
+You should see `CUDA devices: 2`. `config.yaml`'s `tier2_semantic.multi_gpu:
+true` (the default) then automatically spreads embedding encoding across both
+devices via a persistent multi-process pool, and FAISS search across both too
+if the GPU build is present -- no config edits needed. See
+`README.md`'s "GPU utilization" section for exactly what runs where.
 
 ## 5. Run the phases
 
