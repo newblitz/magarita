@@ -27,6 +27,7 @@ environments where these heavier optional dependencies aren't installed yet.
 
 from __future__ import annotations
 
+import gc
 import logging
 from typing import Iterable
 
@@ -58,10 +59,10 @@ class EmbeddingModel:
     def __init__(
         self,
         model_name: str,
-        batch_size: int = 256,
+        batch_size: int = 64,  # reduced from 256 → 64 for CPU; config.yaml overrides this
         device: str = "auto",
-        multi_gpu: bool = True,
-        fp16: bool = True,
+        multi_gpu: bool = False,  # False by default; True only when GPU is available
+        fp16: bool = False,       # False by default; True only speeds up CUDA
         require_gpu: bool = False,
     ):
         from sentence_transformers import SentenceTransformer  # lazy import
@@ -243,6 +244,7 @@ def tier2_candidates(
             emb = embedder.encode(texts)
             k = min(top_k, len(ids))
             if k == 0:
+                del emb
                 continue
             index = _build_index(emb, cfg)
             scores, neighbors = index.search(s1_emb, k)
@@ -254,6 +256,15 @@ def tier2_candidates(
                     result_frames.append(
                         (s1_id, ids[nbr_idx], field, float(scores[row_i, col_j]))
                     )
+            # Free the FAISS index + embedding matrix + result arrays now —
+            # they can be several hundred MB for a large country partition.
+            del index, emb, scores, neighbors
+            gc.collect()
+
+        # Free S1 embedding before the next field's encode() call.
+        del s1_emb
+        gc.collect()
+
 
     if not result_frames:
         return pd.DataFrame(
@@ -270,7 +281,7 @@ def tier2_candidates(
 def _default_embedder(cfg: dict) -> "EmbeddingModel":
     return EmbeddingModel(
         cfg["model_name"],
-        cfg.get("batch_size", 256),
+        cfg.get("batch_size", 64),  # default 64 for CPU; config.yaml sets this explicitly
         device=cfg.get("device", "auto"),
         multi_gpu=cfg.get("multi_gpu", True),
         fp16=cfg.get("fp16", True),
@@ -291,6 +302,10 @@ def tier2_candidates_all_countries(
     Owns (and closes) the embedder's GPU worker pool when it creates one
     itself -- pass your own ``embedder`` in if you need it to stay alive for
     further calls after this function returns.
+
+    Calls ``gc.collect()`` between countries so that FAISS index objects and
+    embedding arrays from one country are freed before the next is processed --
+    critical for 13 GB RAM with many country partitions.
     """
     cfg = config["tier2_semantic"]
     owns_embedder = embedder is None
@@ -298,13 +313,15 @@ def tier2_candidates_all_countries(
         embedder = _default_embedder(cfg)
     try:
         countries: Iterable[str] = s1_df["norm_country"].unique()
-        frames = [
-            tier2_candidates(s1_df, s2_df, s3_df, c, config, embedder=embedder) for c in countries
-        ]
+        frames = []
+        for c in countries:
+            frame = tier2_candidates(s1_df, s2_df, s3_df, c, config, embedder=embedder)
+            if len(frame):
+                frames.append(frame)
+            gc.collect()
     finally:
         if owns_embedder:
             embedder.close()
-    frames = [f for f in frames if len(f)]
     if not frames:
         return pd.DataFrame(
             columns=["source1_entity_id", "candidate_entity_id", "field", "cosine_score", "source_channel"]

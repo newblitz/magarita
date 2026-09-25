@@ -24,8 +24,8 @@ tier0_deterministic:
 
 tier1_lexical:
   qgram_size: 4              # try 3 and 4, keep whichever gives better recall/candidate ratio
-  minhash_permutations: 96   # 64-128 range
-  lsh_bands: 24              # bands x rows-per-band = permutations
+  minhash_permutations: 64   # reduced from 96 → 64 for 13 GB RAM; each MinHash = perms×8 bytes/record
+  lsh_bands: 16              # bands×rows = 64 (= minhash_permutations); was 24×4=96
   fields: [name, name_address]   # build two separate MinHash indexes
 
 tier2_semantic:
@@ -33,16 +33,16 @@ tier2_semantic:
   embedding_dim: 384
   fields: [name, name_address]
   hnsw:
-    ef_construction: 60
+    ef_construction: 40      # reduced from 60 → 40; less temp RAM during index build
     ef_search: 16
     m: 32
-  top_k: 10                  # start at 10, sweep 5-20 during tuning
-  batch_size: 256            # per-GPU batch size when multi_gpu splits across devices
+  top_k: 5                   # reduced from 10 → 5; halves FAISS result matrix size
+  batch_size: 64             # reduced from 256 → 64; 4× less peak RAM per encode call on CPU
   fine_tune: false            # set true once contrastive fine-tuning (per architecture report §7) is wired up
-  # --- GPU utilization (e.g. Kaggle T4 x2) ---
+  # --- GPU utilization (set multi_gpu/fp16 to true when running on GPU) ---
   device: auto               # auto | cpu | cuda | cuda:0 | cuda:1 ...
-  multi_gpu: true            # use every visible CUDA GPU (embedding pool + FAISS index)
-  fp16: true                 # half-precision embedding inference on CUDA (ignored on CPU)
+  multi_gpu: false           # disabled for 13 GB RAM: no GPU; avoids spawning worker processes
+  fp16: false                # disabled on CPU: no speedup, avoids conversion overhead
   require_gpu: false         # set true to raise loudly instead of silently falling back
                               # to CPU when no CUDA device is visible -- use this while
                               # debugging "why is it on CPU" on a GPU notebook

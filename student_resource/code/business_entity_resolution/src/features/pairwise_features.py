@@ -221,24 +221,124 @@ CATEGORICAL_COLUMNS = ["source_channel"]
 def build_feature_matrix(
     fused_df: pd.DataFrame, s1_df: pd.DataFrame, other_df: pd.DataFrame
 ) -> pd.DataFrame:
-    """Vectorization note: joins the fused candidate frame against the S1 and
-    S2/S3 record tables once (dict lookups keyed by entity_id), then computes
-    features via a single zip-based loop -- not ``DataFrame.iterrows()``, which
-    the EDA report flags as the dominant bottleneck at multi-million-row scale.
+    """Build the pairwise feature matrix via merge + vectorized column ops.
+
+    Uses ``pd.merge`` instead of ``to_dict(orient='records')`` to keep data in
+    contiguous column arrays.  The old dict-per-row approach materialised every
+    fused candidate as a Python object, roughly doubling peak RAM at scale.
+    String-similarity functions are applied with ``pd.Series.map`` (one pass per
+    column) which is faster and allocates far fewer intermediate objects.
     """
-    s1_lookup = s1_df.set_index("entity_id").to_dict(orient="index")
-    other_lookup = other_df.set_index("entity_id").to_dict(orient="index")
+    # ── 1. Join fused candidates with source records ──────────────────────────
+    # Keep only the columns we actually need from each source to minimise the
+    # size of the merged frame.
+    s1_cols = ["entity_id", "norm_name", "norm_address", "norm_country",
+               "house_number", "name_prefix"]
+    other_cols = ["entity_id", "norm_name", "norm_address", "norm_country",
+                  "house_number"]
 
-    rows = []
-    for rec in fused_df.to_dict(orient="records"):
-        s1_id = rec["source1_entity_id"]
-        cand_id = rec["candidate_entity_id"]
-        s1_record = s1_lookup.get(s1_id)
-        s2s3_record = other_lookup.get(cand_id)
-        if s1_record is None or s2s3_record is None:
-            continue
-        s1_record = {**s1_record, "entity_id": s1_id}
-        s2s3_record = {**s2s3_record, "entity_id": cand_id}
-        rows.append(compute_features(rec, s1_record, s2s3_record))
+    s1_sub = s1_df[[c for c in s1_cols if c in s1_df.columns]].copy()
+    other_sub = other_df[[c for c in other_cols if c in other_df.columns]].copy()
 
-    return pd.DataFrame(rows)
+    # Convert any category columns back to str for merge key safety.
+    for df_ in (s1_sub, other_sub):
+        for col in df_.select_dtypes("category").columns:
+            df_[col] = df_[col].astype(str)
+
+    merged = fused_df.merge(
+        s1_sub.rename(columns=lambda c: f"s1_{c}" if c != "entity_id" else "source1_entity_id"),
+        on="source1_entity_id",
+        how="inner",
+    ).merge(
+        other_sub.rename(columns=lambda c: f"c_{c}" if c != "entity_id" else "candidate_entity_id"),
+        on="candidate_entity_id",
+        how="inner",
+    )
+
+    if merged.empty:
+        return pd.DataFrame()
+
+    # ── 2. Convenience aliases ────────────────────────────────────────────────
+    n1 = merged["s1_norm_name"].fillna("")
+    n2 = merged["c_norm_name"].fillna("")
+    a1 = merged["s1_norm_address"].fillna("")
+    a2 = merged["c_norm_address"].fillna("")
+
+    # ── 3. Name features ──────────────────────────────────────────────────────
+    out = pd.DataFrame(index=merged.index)
+    out["source1_entity_id"] = merged["source1_entity_id"]
+    out["candidate_entity_id"] = merged["candidate_entity_id"]
+
+    out["name_exact_match"] = ((n1 == n2) & (n1 != "")).astype(int)
+    out["name_levenshtein_sim"] = [
+        Levenshtein.normalized_similarity(a, b) if (a or b) else 1.0
+        for a, b in zip(n1, n2)
+    ]
+    out["name_jaro_winkler_sim"] = [
+        JaroWinkler.normalized_similarity(a, b) if (a or b) else 1.0
+        for a, b in zip(n1, n2)
+    ]
+    out["name_char_ngram_cosine"] = [_char_ngram_cosine(a, b) for a, b in zip(n1, n2)]
+    out["name_minhash_jaccard"] = [_minhash_jaccard_exact(a, b) for a, b in zip(n1, n2)]
+    out["name_token_jaccard"] = [_token_jaccard(a, b) for a, b in zip(n1, n2)]
+    out["name_token_overlap"] = [_token_overlap(a, b) for a, b in zip(n1, n2)]
+    np1 = merged.get("s1_name_prefix", pd.Series([""] * len(merged), index=merged.index)).fillna("")
+    np2 = merged.get("c_name_prefix", pd.Series([""] * len(merged), index=merged.index)).fillna("")
+    out["name_prefix_agreement"] = ((np1 == np2) & (np1 != "")).astype(int)
+    out["name_len_diff"] = (n1.str.len() - n2.str.len()).abs()
+    out["name_len1"] = n1.str.len()
+    out["name_len2"] = n2.str.len()
+
+    # ── 4. Address features ───────────────────────────────────────────────────
+    out["addr_exact_match"] = ((a1 == a2) & (a1 != "")).astype(int)
+    out["addr_char_sim"] = [
+        Levenshtein.normalized_similarity(a, b) if (a or b) else 1.0
+        for a, b in zip(a1, a2)
+    ]
+    out["addr_token_jaccard"] = [_token_jaccard(a, b) for a, b in zip(a1, a2)]
+
+    hn1_col = merged.get("s1_house_number", pd.Series([None] * len(merged), index=merged.index))
+    hn2_col = merged.get("c_house_number", pd.Series([None] * len(merged), index=merged.index))
+    hn1_eff = [h if h else extract_house_number(a) for h, a in zip(hn1_col, a1)]
+    hn2_eff = [h if h else extract_house_number(a) for h, a in zip(hn2_col, a2)]
+    out["house_number_agreement"] = [
+        int(bool(h1) and bool(h2) and h1 == h2) for h1, h2 in zip(hn1_eff, hn2_eff)
+    ]
+    out["postal_agreement"] = [
+        int(bool(p1) and bool(p2) and p1 == p2)
+        for p1, p2 in zip(a1.map(_postal_code), a2.map(_postal_code))
+    ]
+    out["numeric_token_overlap"] = [
+        len(_numeric_tokens(a) & _numeric_tokens(b)) for a, b in zip(a1, a2)
+    ]
+    out["addr_len_diff"] = (a1.str.len() - a2.str.len()).abs()
+    out["addr_len1"] = a1.str.len()
+    out["addr_len2"] = a2.str.len()
+    out["address_missing_s2s3"] = (a2 == "").astype(int)
+
+    # ── 5. Retrieval-channel features ─────────────────────────────────────────
+    cos = merged.get("cosine_score", pd.Series([None] * len(merged), index=merged.index))
+    out["embedding_cosine"] = pd.to_numeric(cos, errors="coerce").fillna(0.0)
+
+    mhr = merged.get("jaccard_score", pd.Series([None] * len(merged), index=merged.index))
+    mhr_num = pd.to_numeric(mhr, errors="coerce")
+    out["minhash_jaccard_retrieval"] = mhr_num.where(mhr_num.notna(), other=out["name_minhash_jaccard"])
+
+    out["source_channel"] = merged.get("source_channel", "unknown")
+    out["n_channels_agreeing"] = merged.get("n_channels", 1)
+    out["is_high_conf"] = merged.get("source_channel", "").astype(str).str.contains("high_conf").astype(int)
+
+    # ── 6. Metadata ───────────────────────────────────────────────────────────
+    c1 = merged["s1_norm_country"].fillna("")
+    c2 = merged["c_norm_country"].fillna("")
+    out["country_match"] = ((c1 == c2) & (c1 != "")).astype(int)
+    out["source_indicator"] = merged["candidate_entity_id"].astype(str).str.startswith("S2-").astype(int)
+
+    # ── 7. Interaction features ───────────────────────────────────────────────
+    out["name_addr_sim_product"] = out["name_jaro_winkler_sim"] * out["addr_char_sim"]
+    out["house_number_match_name_sim"] = out["house_number_agreement"] * out["name_jaro_winkler_sim"]
+    out["exact_name_and_partial_address"] = out["name_exact_match"] * out["addr_token_jaccard"]
+    out["high_conf_interaction"] = out["is_high_conf"] * out["name_jaro_winkler_sim"]
+
+    return out.reset_index(drop=True)
+

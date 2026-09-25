@@ -17,6 +17,7 @@ from labeled data.
 
 from __future__ import annotations
 
+import gc
 from typing import Iterable
 
 import pandas as pd
@@ -96,6 +97,9 @@ def tier1_candidates(
             lsh.insert(eid, mh)
 
         if not other_minhash:
+            # Nothing to query — drop these (possibly large) dicts early.
+            del lsh, other_minhash, other_qgrams
+            gc.collect()
             continue
 
         rows = []
@@ -112,10 +116,15 @@ def tier1_candidates(
                 jaccard = inter / union if union else 0.0
                 rows.append((eid, cand_id, field, jaccard))
 
+        # Free the large LSH index and MinHash dicts before the next field.
+        del lsh, other_minhash, other_qgrams
+        gc.collect()
+
         if rows:
             result_frames.append(
                 pd.DataFrame(rows, columns=["source1_entity_id", "candidate_entity_id", "field", "jaccard_score"])
             )
+
 
     if not result_frames:
         return pd.DataFrame(
@@ -131,10 +140,20 @@ def tier1_candidates_all_countries(
     s1_df: pd.DataFrame, s2_df: pd.DataFrame, s3_df: pd.DataFrame, config: dict
 ) -> pd.DataFrame:
     """Convenience wrapper: run :func:`tier1_candidates` over every country present
-    in ``s1_df`` (open-set -- whatever string values are actually present)."""
+    in ``s1_df`` (open-set -- whatever string values are actually present).
+
+    Processes one country at a time and calls ``gc.collect()`` between iterations
+    so that each country's MinHash/LSH structures are freed before the next one
+    is built -- critical for 13 GB RAM with large per-country partitions.
+    """
     countries: Iterable[str] = s1_df["norm_country"].unique()
-    frames = [tier1_candidates(s1_df, s2_df, s3_df, c, config) for c in countries]
-    frames = [f for f in frames if len(f)]
+    frames = []
+    for c in countries:
+        frame = tier1_candidates(s1_df, s2_df, s3_df, c, config)
+        if len(frame):
+            frames.append(frame)
+        # Trigger GC to release cyclic garbage from this country's processing.
+        gc.collect()
     if not frames:
         return pd.DataFrame(
             columns=["source1_entity_id", "candidate_entity_id", "field", "jaccard_score", "source_channel"]

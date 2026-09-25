@@ -21,6 +21,7 @@ After running, validate with:
 from __future__ import annotations
 
 import argparse
+import gc
 import json
 import logging
 
@@ -39,6 +40,7 @@ from src.utils.io import (
     resolve_path,
     write_id_list_tsv,
 )
+from src.utils.mem_monitor import log_mem
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger("run_inference")
@@ -46,13 +48,19 @@ log = logging.getLogger("run_inference")
 
 def load_test_data(config: dict) -> dict[str, pd.DataFrame]:
     paths = config["paths"]
+    log_mem("before loading test data")
     s1 = read_source_tsv(paths["test_source1"])
+    log_mem("after test S1 load")
     s2 = read_source_tsv(paths["test_source2"])
+    log_mem("after test S2 load")
     s3 = read_source_tsv(paths["test_source3"])
+    log_mem("after test S3 load")
     log.info("Loaded test S1=%d S2=%d S3=%d", len(s1), len(s2), len(s3))
     s1 = normalize_dataframe(s1, config)
     s2 = normalize_dataframe(s2, config)
     s3 = normalize_dataframe(s3, config)
+    gc.collect()
+    log_mem("after normalization (GC'd raw frames)")
     return {"s1": s1, "s2": s2, "s3": s3}
 
 
@@ -86,9 +94,17 @@ def build_test_candidates(data: dict, config: dict, retrieval_thresholds: dict) 
 
 
 def score_candidates(fused_df: pd.DataFrame, data: dict, model) -> pd.DataFrame:
-    feat_s2 = build_feature_matrix(fused_df, data["s1"], data["s2"])
-    feat_s3 = build_feature_matrix(fused_df, data["s1"], data["s3"])
-    feature_df = pd.concat([feat_s2, feat_s3], ignore_index=True)
+    log_mem("before feature matrix (S2)")
+    feat_parts = [build_feature_matrix(fused_df, data["s1"], data["s2"])]
+    gc.collect()
+    log_mem("after feature matrix (S2)")
+    feat_parts.append(build_feature_matrix(fused_df, data["s1"], data["s3"]))
+    gc.collect()
+    log_mem("after feature matrix (S3)")
+
+    feature_df = pd.concat(feat_parts, ignore_index=True)
+    del feat_parts
+    gc.collect()
     feature_df = feature_df.drop_duplicates(subset=["source1_entity_id", "candidate_entity_id"])
 
     if feature_df.empty:
@@ -99,6 +115,8 @@ def score_candidates(fused_df: pd.DataFrame, data: dict, model) -> pd.DataFrame:
     for col in CATEGORICAL_COLUMNS:
         X[col] = X[col].astype("category")
     feature_df["score"] = model.predict_proba(X)[:, 1]
+    del X
+    gc.collect()
     return feature_df
 
 

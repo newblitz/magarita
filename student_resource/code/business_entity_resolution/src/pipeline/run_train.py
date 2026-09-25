@@ -18,6 +18,7 @@ Must be run with the current working directory anywhere; paths resolve via
 from __future__ import annotations
 
 import argparse
+import gc
 import json
 import logging
 import time
@@ -41,6 +42,7 @@ from src.utils.io import (
     read_source_tsv,
     resolve_path,
 )
+from src.utils.mem_monitor import log_mem
 from src.utils.validation_split import split_s1_ids
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -49,9 +51,13 @@ log = logging.getLogger("run_train")
 
 def load_train_data(config: dict, sample: int | None = None) -> dict[str, pd.DataFrame]:
     paths = config["paths"]
+    log_mem("before loading train data")
     s1 = read_source_tsv(paths["train_source1"], nrows=sample)
+    log_mem("after S1 load")
     s2 = read_source_tsv(paths["train_source2"])
+    log_mem("after S2 load")
     s3 = read_source_tsv(paths["train_source3"])
+    log_mem("after S3 load")
     gt = read_ground_truth_tsv(paths["train_ground_truth"])
 
     if sample is not None:
@@ -63,6 +69,10 @@ def load_train_data(config: dict, sample: int | None = None) -> dict[str, pd.Dat
     s1 = normalize_dataframe(s1, config)
     s2 = normalize_dataframe(s2, config)
     s3 = normalize_dataframe(s3, config)
+    # normalize_dataframe returns a copy; the original raw DataFrames are now
+    # unreachable — force GC to reclaim them before blocking begins.
+    gc.collect()
+    log_mem("after normalization (GC'd raw frames)")
     return {"s1": s1, "s2": s2, "s3": s3, "gt": gt}
 
 
@@ -192,12 +202,24 @@ def phase_fuse(data: dict, config: dict) -> tuple[pd.DataFrame, dict]:
 
 def phase_train_full(data: dict, config: dict) -> None:
     fused_df, _ = phase_fuse(data, config)
+    log_mem("after fuse")
 
-    feature_df = build_feature_matrix(fused_df, data["s1"], data["s2"])
-    feature_df_s3 = build_feature_matrix(fused_df, data["s1"], data["s3"])
-    feature_df = pd.concat([feature_df, feature_df_s3], ignore_index=True)
+    # Build feature matrices for S2 and S3 sequentially — never hold both
+    # fully-materialised frames in RAM at the same time.
+    log_mem("before feature matrix (S2)")
+    feat_parts = [build_feature_matrix(fused_df, data["s1"], data["s2"])]
+    gc.collect()
+    log_mem("after feature matrix (S2)")
+    feat_parts.append(build_feature_matrix(fused_df, data["s1"], data["s3"]))
+    gc.collect()
+    log_mem("after feature matrix (S3)")
+
+    feature_df = pd.concat(feat_parts, ignore_index=True)
+    del feat_parts
+    gc.collect()
     feature_df = feature_df.drop_duplicates(subset=["source1_entity_id", "candidate_entity_id"])
     log.info("Feature matrix: %d rows, %d columns", len(feature_df), feature_df.shape[1])
+    log_mem("after feature dedup")
 
     gt_pairs = _ground_truth_pairs(data["gt"])
     val_fraction = config["calibration"]["val_fraction"]
