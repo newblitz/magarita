@@ -1,0 +1,31 @@
+# Pin exact versions used to build/validate this pipeline.
+# Core
+pandas==3.0.6
+numpy==2.3.4
+pyyaml==6.0.3
+
+# Tier 1 -- lexical retrieval (MinHash/LSH), MIT licensed
+datasketch==2.0.0
+
+# Pairwise string-similarity features, MIT licensed
+rapidfuzz==3.14.6
+
+# Threshold-learning MLP (LSBlock two-threshold trick), BSD licensed
+scikit-learn==1.9.1
+
+# Final pairwise classifier, MIT licensed, trained from scratch on our own
+# labeled pairs (not a redistributed pretrained model)
+lightgbm==4.7.0
+
+# Model / artifact persistence
+joblib==1.6.0
+
+# Tier 2 -- semantic retrieval (multilingual sentence embeddings + ANN index).
+# Both Apache-2.0 licensed, both < 8B params (see README.md "License and size
+# compliance" section for the specific model checked).
+sentence-transformers==3.3.1
+faiss-cpu==1.9.0
+
+# Needed transitively by sentence-transformers; pin only if you hit resolver
+# conflicts in your own environment -- otherwise let pip resolve them.
+torch==2.5.1

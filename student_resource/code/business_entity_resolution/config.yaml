@@ -1,0 +1,70 @@
+# Business Entity Resolution — single source of truth for every tunable.
+# Paths below are resolved relative to the project root, i.e. the directory
+# that contains `dataset/`, `output/` and `code/` (this repo's `student_resource/`).
+# See src/utils/io.py:resolve_path() for the resolution logic.
+
+paths:
+  train_source1: dataset/train/train_source1.tsv
+  train_source2: dataset/train/train_source2.tsv
+  train_source3: dataset/train/train_source3.tsv
+  train_ground_truth: dataset/train/train_ground_truth.tsv
+  test_source1: dataset/test/test_source1.tsv
+  test_source2: dataset/test/test_source2.tsv
+  test_source3: dataset/test/test_source3.tsv
+  output_dir: output/
+  artifacts_dir: code/business_entity_resolution/artifacts/   # trained models, thresholds, logs
+
+normalization:
+  unicode_form: NFKC
+  lowercase: true
+  strip_punct: true
+
+tier0_deterministic:
+  key_fields: [country, house_number, exact_name]
+
+tier1_lexical:
+  qgram_size: 4              # try 3 and 4, keep whichever gives better recall/candidate ratio
+  minhash_permutations: 96   # 64-128 range
+  lsh_bands: 24              # bands x rows-per-band = permutations
+  fields: [name, name_address]   # build two separate MinHash indexes
+
+tier2_semantic:
+  model_name: "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
+  embedding_dim: 384
+  fields: [name, name_address]
+  hnsw:
+    ef_construction: 60
+    ef_search: 16
+    m: 32
+  top_k: 10                  # start at 10, sweep 5-20 during tuning
+  batch_size: 256
+  fine_tune: false            # set true once contrastive fine-tuning (per architecture report §7) is wired up
+
+threshold_learning:
+  sample_pairs_per_class: null   # default: len(ground_truth) // 2, per class
+  mlp_hidden_units: 16
+  optimize_for: f0.5             # NOT f1 - deviates from LSBlock reference, intentional
+  random_seed: 42
+
+classifier:
+  library: lightgbm              # lightgbm | xgboost | catboost - pick one, document choice
+  license_check: "LightGBM is MIT licensed; trained from scratch on our own labeled pairs, not a redistributed pretrained model -- compliant with the MIT/Apache-2.0, <=8B constraint."
+  max_depth: -1
+  num_leaves: 63
+  learning_rate: 0.05
+  n_estimators: 500
+  early_stopping_rounds: 50
+  random_seed: 42
+
+calibration:
+  metric: macro_f0.5
+  split_unit: source1_entity_id  # never split by pair - see Phase 8
+  val_fraction: 0.15
+  per_tier_thresholds: true      # separate threshold for high_conf / lexical / semantic / multi-channel
+  random_seed: 42
+
+dev:
+  # Optional sampling knobs for fast local iteration (Magellan "downsample before
+  # experimenting" habit, architecture report §10.1). Not used by run_inference.py.
+  sample_s1: null            # e.g. 50000 to restrict S1 rows while iterating
+  random_seed: 42
