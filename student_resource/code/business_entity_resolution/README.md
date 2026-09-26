@@ -68,6 +68,10 @@ Each phase is independently runnable and checkable -- do not skip straight to
 `BUILDING.md` first.
 
 ```bash
+# 0. Run Tier 0 in its own process with per-country checkpoints. Re-running
+#    this command skips countries already listed in the manifest.
+python3 -m src.blocking.tier0_deterministic --output-dir artifacts/tier0
+
 # 1. Sanity-check normalization and Tier 0 reproduce EDA numbers (~97.8-97.9%
 #    precision, ~14.7-15.2% recall against train_ground_truth.tsv)
 python3 -m src.pipeline.run_train --phase tier0_only
@@ -100,6 +104,13 @@ python3 utils/validate_submission.py \
 Add `--sample 50000` to any `run_train.py` invocation to restrict the number of S1
 rows for fast local iteration (the pipeline's own "downsample before experimenting"
 discipline -- see architecture report §10.1); full-scale runs should omit it.
+
+The standalone Tier 0 command writes `tier0_<country>.tsv` files and an atomic
+`tier0_manifest.json` under the checkpoint directory. It reads and writes only
+disk-backed artifacts, so a later tier can be launched in a fresh Python process
+even if the Tier 0 process is interrupted. Memory RSS is logged at each country
+boundary; `psutil` is used when available and the standard-library `resource`
+fallback is used otherwise.
 
 Artifacts (learned retrieval thresholds, the trained classifier, and the calibrated
 decision thresholds) are written to `code/business_entity_resolution/artifacts/` and

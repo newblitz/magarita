@@ -12,6 +12,8 @@ pipeline is never broken by a missing optional dependency.
 from __future__ import annotations
 
 import logging
+import resource
+import sys
 
 log = logging.getLogger(__name__)
 
@@ -30,8 +32,14 @@ try:
         except Exception:  # pragma: no cover
             pass
 
-except ImportError:  # psutil not installed → silent no-op
+except ImportError:
 
     def log_mem(label: str = "") -> None:  # type: ignore[misc]
-        """No-op fallback when psutil is not available."""
-        pass
+        """Log peak RSS using the standard library when psutil is unavailable."""
+        try:
+            peak = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+            # macOS reports bytes; Linux reports KiB.
+            rss_gb = peak / (1024 ** 3) if sys.platform == "darwin" else peak / (1024 ** 2)
+            log.info("RAM %s: %.2f GB peak RSS", label, rss_gb)
+        except Exception:  # pragma: no cover
+            pass

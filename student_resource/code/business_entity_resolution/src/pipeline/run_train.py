@@ -29,6 +29,7 @@ import pandas as pd
 
 from src.blocking.fuse_candidates import fuse, write_candidate_pairs_tsv
 from src.blocking.tier0_deterministic import tier0_candidates
+from src.blocking.tier0_deterministic import write_tier0_checkpoint
 from src.blocking.tier1_lexical import tier1_candidates_all_countries
 from src.features.pairwise_features import build_feature_matrix
 from src.model.calibrate_thresholds import calibrate_thresholds
@@ -112,6 +113,13 @@ def phase_tier0_only(data: dict, config: dict) -> pd.DataFrame:
         len(tier0_df), time.time() - t0, stats["recall"], precision,
     )
     return tier0_df
+
+
+def phase_tier0_checkpoint(data: dict, config: dict) -> None:
+    """Run Tier 0's disk-checkpointed implementation in this process."""
+    output_dir = _artifacts_dir(config) / "tier0"
+    manifest = write_tier0_checkpoint(data["s1"], data["s2"], data["s3"], output_dir)
+    log.info("Tier0 checkpoint manifest: %s", manifest)
 
 
 def phase_tier1_measure(data: dict, config: dict) -> pd.DataFrame:
@@ -259,6 +267,7 @@ def phase_train_full(data: dict, config: dict) -> None:
 
 PHASES = {
     "tier0_only": phase_tier0_only,
+    "tier0_checkpoint": phase_tier0_checkpoint,
     "tier1_measure": phase_tier1_measure,
     "tier2_measure": phase_tier2_measure,
     "fuse": phase_fuse,

@@ -801,41 +801,7 @@ But thresholds should be learned from validation results rather than manually ch
 
 ---
 
-## 26. GPU/Performance Insight
 
-The current implementation uses Python-heavy structures:
-
-```python
-defaultdict
-dict
-set
-iterrows()
-string operations
-tuple construction
-```
-
-Simply moving these objects to GPU will not solve the main bottleneck.
-
-A better optimization is:
-
-1. Normalize strings on CPU.
-2. Convert blocking keys to integer IDs.
-3. Store relationships in compact arrays.
-4. Process S1 in batches.
-5. Avoid enormous Python tuple sets.
-6. Use GPU for genuinely vectorizable operations.
-
-GPU is particularly appropriate later for:
-
-- batched character similarity;
-- vectorized similarity calculations;
-- neural embeddings;
-- approximate retrieval;
-- pairwise feature computation.
-
-The current bottleneck is primarily data engineering rather than tensor computation.
-
----
 
 ## 27. Why an LLM Should Not Be the Default Matcher
 
