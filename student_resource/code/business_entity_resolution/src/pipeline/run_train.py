@@ -50,7 +50,12 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(mess
 log = logging.getLogger("run_train")
 
 
-def load_train_data(config: dict, sample: int | None = None) -> dict[str, pd.DataFrame]:
+def load_train_data(
+    config: dict,
+    sample: int | None = None,
+    keep_raw: bool = True,
+    load_ground_truth: bool = True,
+) -> dict[str, pd.DataFrame]:
     paths = config["paths"]
     log_mem("before loading train data")
     s1 = read_source_tsv(paths["train_source1"], nrows=sample)
@@ -59,7 +64,11 @@ def load_train_data(config: dict, sample: int | None = None) -> dict[str, pd.Dat
     log_mem("after S2 load")
     s3 = read_source_tsv(paths["train_source3"])
     log_mem("after S3 load")
-    gt = read_ground_truth_tsv(paths["train_ground_truth"])
+    gt = (
+        read_ground_truth_tsv(paths["train_ground_truth"])
+        if load_ground_truth
+        else pd.DataFrame(columns=["source1_entity_id", "matched_entity_ids"])
+    )
 
     if sample is not None:
         keep_ids = set(s1["entity_id"])
@@ -67,9 +76,9 @@ def load_train_data(config: dict, sample: int | None = None) -> dict[str, pd.Dat
 
     log.info("Loaded train S1=%d S2=%d S3=%d ground_truth=%d", len(s1), len(s2), len(s3), len(gt))
 
-    s1 = normalize_dataframe(s1, config)
-    s2 = normalize_dataframe(s2, config)
-    s3 = normalize_dataframe(s3, config)
+    s1 = normalize_dataframe(s1, config, keep_raw=keep_raw)
+    s2 = normalize_dataframe(s2, config, keep_raw=keep_raw)
+    s3 = normalize_dataframe(s3, config, keep_raw=keep_raw)
     # normalize_dataframe returns a copy; the original raw DataFrames are now
     # unreachable — force GC to reclaim them before blocking begins.
     gc.collect()
@@ -284,7 +293,12 @@ def main() -> None:
 
     config = load_config(args.config)
     sample = args.sample if args.sample is not None else config.get("dev", {}).get("sample_s1")
-    data = load_train_data(config, sample=sample)
+    data = load_train_data(
+        config,
+        sample=sample,
+        keep_raw=args.phase not in {"tier0_only", "tier0_checkpoint"},
+        load_ground_truth=args.phase != "tier0_checkpoint",
+    )
     PHASES[args.phase](data, config)
 
 

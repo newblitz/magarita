@@ -60,10 +60,14 @@ def field_column(field: str) -> str:
     return FIELD_COLUMN_MAP.get(field, field)
 
 
-def normalize_dataframe(df: pd.DataFrame, config: dict) -> pd.DataFrame:
-    """Add normalized columns to a source dataframe (S1/S2/S3), in place-safe copy.
+def normalize_dataframe(
+    df: pd.DataFrame, config: dict, keep_raw: bool = True
+) -> pd.DataFrame:
+    """Add normalized columns to a source dataframe (S1/S2/S3).
 
     Adds: norm_name, norm_address, name_address, house_number, name_prefix.
+    Set ``keep_raw=False`` for blocking phases that do not need the original
+    free-text columns after normalization.
     """
     norm_cfg = config.get("normalization", {})
     unicode_form = norm_cfg.get("unicode_form", "NFKC")
@@ -84,4 +88,8 @@ def normalize_dataframe(df: pd.DataFrame, config: dict) -> pd.DataFrame:
     # never mapped to a fixed enum (France, and any other unseen value, must pass
     # through untouched apart from this light normalization).
     out["norm_country"] = out["country"].map(lambda x: normalize(x, unicode_form, True, False))
+    if not keep_raw:
+        out = out.drop(
+            columns=["business_name", "business_address", "norm_address", "name_address", "name_prefix"]
+        )
     return out

@@ -166,9 +166,11 @@ def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     config = load_config(args.config)
     paths = config["paths"]
-    s1 = normalize_dataframe(read_source_tsv(paths["train_source1"], nrows=args.sample), config)
-    s2 = normalize_dataframe(read_source_tsv(paths["train_source2"]), config)
-    s3 = normalize_dataframe(read_source_tsv(paths["train_source3"]), config)
+    s1 = normalize_dataframe(
+        read_source_tsv(paths["train_source1"], nrows=args.sample), config, keep_raw=False
+    )
+    s2 = normalize_dataframe(read_source_tsv(paths["train_source2"]), config, keep_raw=False)
+    s3 = normalize_dataframe(read_source_tsv(paths["train_source3"]), config, keep_raw=False)
     log_mem("Tier 0 after loading and normalization")
     output_dir = args.output_dir or resolve_path(paths["artifacts_dir"]) / "tier0"
     manifest = write_tier0_checkpoint(s1, s2, s3, output_dir)
